@@ -1,58 +1,72 @@
 import { NextResponse } from 'next/server';
 import jwt from 'jsonwebtoken';
-import { compare } from 'bcrypt';
+import { hash } from 'bcrypt';
 import { supabase } from '@/lib/supabase';
 
 export async function POST(request) {
   try {
-    const { email, password } = await request.json();
+    const { email, password, username } = await request.json();
 
     // Validate input
-    if (!email || !password) {
+    if (!email || !password || !username) {
       return NextResponse.json(
         {
-          message: 'Email and password are required',
+          message: 'Email, password, and username are required',
           status: 'Failed'
         },
         { status: 400 }
       );
     }
 
-    // Find user by email
-    const { data: user, error: findError } = await supabase
+    // Check if user already exists
+    const { data: existingUser, error: checkError } = await supabase
       .from('users')
-      .select('*')
+      .select('id')
       .eq('email', email)
       .single();
 
-    if (findError || !user) {
+    if (existingUser) {
       return NextResponse.json(
         {
-          message: 'Invalid credentials',
+          message: 'User already exists',
           status: 'Failed'
         },
-        { status: 401 }
+        { status: 422 }
       );
     }
 
-    // Compare password
-    const isPasswordValid = await compare(password, user.password);
+    // Hash password
+    const hashedPassword = await hash(password, 10);
 
-    if (!isPasswordValid) {
+    // Create user in Supabase
+    const { data: newUser, error: createError } = await supabase
+      .from('users')
+      .insert([
+        {
+          email,
+          password: hashedPassword,
+          username
+        }
+      ])
+      .select()
+      .single();
+
+    if (createError) {
+      console.error('Error creating user:', createError);
       return NextResponse.json(
         {
-          message: 'Invalid credentials',
+          message: 'Failed to create user',
           status: 'Failed'
         },
-        { status: 401 }
+        { status: 500 }
       );
     }
 
     // Generate JWT token
     const token = jwt.sign(
       {
-        userId: user.id,
-        email: user.email
+        userId: newUser.id,
+        email: newUser.email
       },
       process.env.JWT_SECRET,
       {
@@ -64,27 +78,27 @@ export async function POST(request) {
     const response = NextResponse.json(
       {
         user: {
-          id: user.id,
-          email: user.email,
-          username: user.username
+          id: newUser.id,
+          email: newUser.email,
+          username: newUser.username
         },
         token,
         status: 'Success'
       },
-      { status: 200 }
+      { status: 201 }
     );
 
     // Set cookie
     response.cookies.set('token', token, {
       httpOnly: true,
       sameSite: 'lax',
-      maxAge: 3 * 24 * 60 * 60, // 3 days in seconds
+      maxAge: 3 * 24 * 60 * 60, 
       path: '/'
     });
 
     return response;
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('Registration error:', error);
     return NextResponse.json(
       {
         message: 'Internal server error',
